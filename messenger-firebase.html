@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мессенджер</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+</head>
+<body class="bg-gray-100">
+    <div id="app"></div>
+
+    <script>
+        // ЗАМЕНИ ЭТИ ДАННЫЕ НА СВОИ ИЗ FIREBASE CONSOLE
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT.firebaseapp.com",
+            databaseURL: "https://YOUR_PROJECT.firebaseio.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT.appspot.com",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        class Messenger {
+            constructor() {
+                this.currentUser = null;
+                this.selectedChat = null;
+                this.users = {};
+                this.messages = {};
+                this.render();
+                this.listenToData();
+            }
+
+            listenToData() {
+                db.ref('users').on('value', (snapshot) => {
+                    this.users = snapshot.val() || {};
+                    this.render();
+                });
+
+                db.ref('messages').on('value', (snapshot) => {
+                    this.messages = snapshot.val() || {};
+                    this.render();
+                });
+            }
+
+            async register(username, password) {
+                const usersSnapshot = await db.ref('users').once('value');
+                const users = usersSnapshot.val() || {};
+                
+                const exists = Object.values(users).some(u => u.username === username);
+                if (exists) {
+                    return { error: 'Этот ник уже занят' };
+                }
+
+                const userId = Date.now().toString();
+                const user = {
+                    id: userId,
+                    username,
+                    password,
+                    createdAt: Date.now()
+                };
+
+                await db.ref('users/' + userId).set(user);
+                this.currentUser = user;
+                this.render();
+                return { success: true };
+            }
+
+            async login(username, password) {
+                const usersSnapshot = await db.ref('users').once('value');
+                const users = usersSnapshot.val() || {};
+                
+                const user = Object.values(users).find(
+                    u => u.username === username && u.password === password
+                );
+
+                if (!user) {
+                    return { error: 'Неверный ник или код' };
+                }
+
+                this.currentUser = user;
+                this.render();
+                return { success: true };
+            }
+
+            logout() {
+                this.currentUser = null;
+                this.selectedChat = null;
+                this.render();
+            }
+
+            selectChat(userId) {
+                const chatId = [this.currentUser.id, userId].sort().join('_');
+                this.selectedChat = { chatId, userId };
+                this.render();
+            }
+
+            async sendMessage(text) {
+                if (!text.trim() || !this.selectedChat) return;
+
+                const messageId = Date.now().toString();
+                const message = {
+                    id: messageId,
+                    chatId: this.selectedChat.chatId,
+                    senderId: this.currentUser.id,
+                    text: text.trim(),
+                    timestamp: Date.now()
+                };
+
+                await db.ref('messages/' + this.selectedChat.chatId + '/' + messageId).set(message);
+            }
+
+            getOtherUsers() {
+                return Object.values(this.users).filter(u => u.id !== this.currentUser.id);
+            }
+
+            getChatMessages() {
+                if (!this.selectedChat) return [];
+                const chatMessages = this.messages[this.selectedChat.chatId] || {};
+                return Object.values(chatMessages).sort((a, b) => a.timestamp - b.timestamp);
+            }
+
+            render() {
+                const app = document.getElementById('app');
+                
+                if (!this.currentUser) {
+                    app.innerHTML = this.renderAuth();
+                } else {
+                    app.innerHTML = this.renderMessenger();
+                }
+                
+                this.attachEventListeners();
+            }
+
+            renderAuth() {
+                return `
+                    <div class="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center p-4">
+                        <div class="bg-white rounded-lg shadow-2xl p-8 w-full max-w-md">
+                            <div class="text-center mb-8">
+                                <h1 class="text-3xl font-bold text-gray-800">Мессенджер</h1>
+                                <p class="text-gray-600 mt-2" id="auth-subtitle">Войдите в аккаунт</p>
+                            </div>
+                            <div class="space-y-4">
+                                <input type="text" id="username" placeholder="Ник" 
+                                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none">
+                                <input type="password" id="password" placeholder="Код" 
+                                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none">
+                                <div id="error" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded"></div>
+                                <button id="auth-btn" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-semibold py-3 rounded-lg transition duration-200">
+                                    Войти
+                                </button>
+                                <button id="toggle-auth" class="w-full text-blue-500 hover:text-blue-600 font-medium">
+                                    Создать аккаунт
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderMessenger() {
+                const otherUsers = this.getOtherUsers();
+                const selectedUser = this.selectedChat ? this.users[this.selectedChat.userId] : null;
+                const chatMessages = this.getChatMessages();
+
+                return `
+                    <div class="h-screen flex">
+                        <div class="w-80 bg-white border-r border-gray-200 flex flex-col">
+                            <div class="p-4 border-b border-gray-200 bg-blue-500 text-white">
+                                <div class="flex items-center justify-between">
+                                    <span class="font-semibold">${this.currentUser.username}</span>
+                                    <button id="logout-btn" class="p-2 hover:bg-blue-600 rounded-lg transition">
+                                        Выйти
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="flex-1 overflow-y-auto">
+                                <div class="p-3 text-xs font-semibold text-gray-500 uppercase">Пользователи</div>
+                                ${otherUsers.length === 0 ? 
+                                    '<div class="px-4 py-8 text-center text-gray-500">Пока нет других пользователей</div>' :
+                                    otherUsers.map(user => `
+                                        <button class="user-btn w-full px-4 py-3 flex items-center gap-3 hover:bg-gray-50 transition ${
+                                            this.selectedChat?.userId === user.id ? 'bg-blue-50 border-l-4 border-blue-500' : ''
+                                        }" data-user-id="${user.id}">
+                                            <div class="w-10 h-10 bg-gradient-to-br from-blue-400 to-purple-500 rounded-full flex items-center justify-center text-white font-semibold">
+                                                ${user.username[0].toUpperCase()}
+                                            </div>
+                                            <div class="flex-1 text-left">
+                                                <div class="font-medium text-gray-800">${user.username}</div>
+                                            </div>
+                                        </button>
+                                    `).join('')
+                                }
+                            </div>
+                        </div>
+
+                        <div class="flex-1 flex flex-col">
+                            ${selectedUser ? `
+                                <div class="p-4 bg-white border-b border-gray-200 shadow-sm">
+                                    <div class="flex items-center gap-3">
+                                        <div class="w-10 h-10 bg-gradient-to-br from-blue-400 to-purple-500 rounded-full flex items-center justify-center text-white font-semibold">
+                                            ${selectedUser.username[0].toUpperCase()}
+                                        </div>
+                                        <div class="font-semibold text-gray-800">${selectedUser.username}</div>
+                                    </div>
+                                </div>
+
+                                <div class="flex-1 overflow-y-auto p-4 space-y-3" id="messages-container">
+                                    ${chatMessages.map(msg => `
+                                        <div class="flex ${msg.senderId === this.currentUser.id ? 'justify-end' : 'justify-start'}">
+                                            <div class="max-w-xs px-4 py-2 rounded-2xl ${
+                                                msg.senderId === this.currentUser.id
+                                                    ? 'bg-blue-500 text-white'
+                                                    : 'bg-gray-200 text-gray-800'
+                                            }">
+                                                <div>${msg.text}</div>
+                                                <div class="text-xs mt-1 ${
+                                                    msg.senderId === this.currentUser.id ? 'text-blue-100' : 'text-gray-500'
+                                                }">
+                                                    ${new Date(msg.timestamp).toLocaleTimeString('ru-RU', {
+                                                        hour: '2-digit',
+                                                        minute: '2-digit'
+                                                    })}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+
+                                <div class="p-4 bg-white border-t border-gray-200">
+                                    <div class="flex gap-2">
+                                        <input type="text" id="message-input" placeholder="Введите сообщение..."
+                                            class="flex-1 px-4 py-2 border border-gray-300 rounded-full focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none">
+                                        <button id="send-btn" class="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-full transition">
+                                            Отправить
+                                        </button>
+                                    </div>
+                                </div>
+                            ` : `
+                                <div class="flex-1 flex items-center justify-center text-gray-500">
+                                    <div class="text-center">
+                                        <p class="text-lg">Выберите пользователя для начала чата</p>
+                                    </div>
+                                </div>
+                            `}
+                        </div>
+                    </div>
+                `;
+            }
+
+            attachEventListeners() {
+                if (!this.currentUser) {
+                    let isRegister = false;
+                    
+                    const toggleBtn = document.getElementById('toggle-auth');
+                    const authBtn = document.getElementById('auth-btn');
+                    const subtitle = document.getElementById('auth-subtitle');
+                    
+                    toggleBtn.addEventListener('click', () => {
+                        isRegister = !isRegister;
+                        authBtn.textContent = isRegister ? 'Зарегистрироваться' : 'Войти';
+                        subtitle.textContent = isRegister ? 'Создайте аккаунт' : 'Войдите в аккаунт';
+                        toggleBtn.textContent = isRegister ? 'Уже есть аккаунт' : 'Создать аккаунт';
+                        document.getElementById('error').classList.add('hidden');
+                    });
+
+                    authBtn.addEventListener('click', async () => {
+                        const username = document.getElementById('username').value;
+                        const password = document.getElementById('password').value;
+                        const errorDiv = document.getElementById('error');
+
+                        if (!username.trim() || !password.trim()) {
+                            errorDiv.textContent = 'Заполните все поля';
+                            errorDiv.classList.remove('hidden');
+                            return;
+                        }
+
+                        const result = isRegister ? 
+                            await this.register(username, password) : 
+                            await this.login(username, password);
+
+                        if (result.error) {
+                            errorDiv.textContent = result.error;
+                            errorDiv.classList.remove('hidden');
+                        }
+                    });
+
+                    ['username', 'password'].forEach(id => {
+                        document.getElementById(id).addEventListener('keypress', (e) => {
+                            if (e.key === 'Enter') authBtn.click();
+                        });
+                    });
+                } else {
+                    document.getElementById('logout-btn')?.addEventListener('click', () => this.logout());
+
+                    document.querySelectorAll('.user-btn').forEach(btn => {
+                        btn.addEventListener('click', () => {
+                            this.selectChat(btn.dataset.userId);
+                        });
+                    });
+
+                    const sendBtn = document.getElementById('send-btn');
+                    const messageInput = document.getElementById('message-input');
+                    
+                    if (sendBtn && messageInput) {
+                        sendBtn.addEventListener('click', async () => {
+                            await this.sendMessage(messageInput.value);
+                            messageInput.value = '';
+                        });
+
+                        messageInput.addEventListener('keypress', (e) => {
+                            if (e.key === 'Enter') sendBtn.click();
+                        });
+
+                        const container = document.getElementById('messages-container');
+                        if (container) {
+                            container.scrollTop = container.scrollHeight;
+                        }
+                    }
+                }
+            }
+        }
+
+        new Messenger();
+    </script>
+</body>
+</html>
